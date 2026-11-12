@@ -46,16 +46,18 @@ python -I shoreuploader_v04.py  <输入.mp4> <输出.mp4> [标签文字] [--no-p
 5. `moov` 变大后，所有 `stco`/`co64` 偏移整体平移
 6. 输出固定为 `ftyp + moov + mdat`，不追加任何字节
 
-### v2.0.3：视频样本表注入空壳
+### v2.0.3：视频样本表注入空壳 + 容器归一化
 
-1. `mvhd` / `tkhd` / `mdhd` 的创建、修改时间清零，保留真实时长
-2. 视频轨 `hdlr` 名改写为 `shoreuploader-coded`
-3. `avc1` 的 compressorname 改写为 `ShoreUploader-v2.0.3`
-4. `moov` 下的 `udta` 替换为固定标签（`©too` / `©cmt` / `cprt`）
-5. 视频 `stsz` 尾部追加 N 个大小为 8 的样本，`stts` 保持不变
-6. `stco` 追加 N 个 chunk，偏移全部指向文件末尾的 8 字节桩
-7. `stsc` 追加一条尾条目（samples_per_chunk = 1）覆盖这些 chunk
-8. `mdat` 尾部追加 8 字节 `00 00 00 04 00 00 00 00`
+1. `ftyp` 重写为 `isom` / minor 512 / 兼容品牌 `isom, iso2, avc1|hvc1, mp41`（HEVC 或 HDR 时用 `hvc1`）
+2. `mvhd` / `tkhd` / `mdhd` 的创建、修改时间清零，保留真实时长；所有 `mdhd` 的语言改成 `eng`（`0x15C7`）
+3. 视频轨和第一条音频轨的 `hdlr` 名改写为 `shoreuploader-coded`；视频 compressorname 改写为 `ShoreUploader-v2.0.3`
+4. 视频 `elst` 前插一条空 edit（`duration=16`、`media_time=-1`、`rate=1.0`），只保留原第一条 edit；音频 `elst` 只保留第一条并把 `media_time` 清零
+5. 视频 `stts` 只有一条且 `count>1` 时，拆成 `[count-1, delta]` 和 `[1, 1]`（时长字段不动）
+6. 清掉 moov 子树里的 `uuid`/`c2pa`/`c2mc`/`bdat`/`ccat`/`xml `/`free`/`sdtp`、轨道里的 `udta`、moov 的 `meta`/`udta`
+7. 视频 `stsz` 尾部追加 N 个大小为 8 的样本
+8. `stco` 追加 N 个 chunk，偏移全部指向文件末尾的 8 字节桩；`stsc` 追加一条尾条目（samples_per_chunk = 1）覆盖这些 chunk
+9. `moov` 下追加固定 `udta`（`©too` = `ShoreUploader-v2.0.3`、`©cmt` / `cprt` = `shoreuploader.com`）
+10. 输出为 `ftyp + 空 free + moov + mdat + 8 字节桩`（`00 00 00 04 00 00 00 00`）
 
 解码器按顺序播放真实样本，遇到尾部空壳时报 `missing picture in access unit with size 8`，画面不受影响。
 
@@ -91,7 +93,7 @@ v0.4 的固定 `stsd` 模板和 `样本数 × 1024` 的时长算法要求音频�
   - 3 个 ffmpeg 合成样本（含 moov 在尾、44.1 kHz、单声道、带 `pasp` 的情况）
   - 2 个真实样本（v2.0.0 的 46 MB 文件、v2.0.3 的 58 MB 文件）
 - 预处理按站点的参数执行，但本机 ffmpeg 与站点的 ffmpeg.wasm 版本不同，重编码后的文件不会与站点逐字节相同；只要结构满足（48 kHz AAC、单一 `stts`），patcher 阶段的输出仍与站点一致。
-- **v2.0.3**：见下方实测表。
+- **v2.0.3**：与 ShoreUploader-Android 仓库移植的站点引擎（`shore_engine.js`，v2.0.3）在无头 Edge 里对 5 个 ffmpeg 合成输入逐字节相同：AVC+AAC 48k、无音轨、HEVC、`ghost=0`、无 B 帧+单声道 44.1k。真实样本 `riatsuae` 里的 `ftyp`、`eng`、视频 `elst [16/-1, 18350/1500]`、`stts [(1100,1500),(1,1)]`、9112 个空壳也与这套步骤一致。
 
 ## 实测结果（2026-11，抖音）
 
@@ -106,7 +108,7 @@ v0.4 的固定 `stsd` 模板和 `样本数 × 1024` 的时长算法要求音频�
 ## 限制
 
 - **v2.0.0**：只支持 32 位 `stsz` 和 `stco`/`co64`；输出会丢掉 `ftyp`/`moov`/`mdat` 之外的顶层 box。
-- **v2.0.3**：只处理 `stco`。文件超过 4 GB 需要 `co64`，脚本会直接报错。只支持可变大小的 `stsz`（sample_size = 0）。**输入必须是干净文件**：`stsz` 样本数等于 `stts` 计时样本数；对已经打过补丁的文件再跑会破坏样本表。
+- **v2.0.3**：只处理 `stco`。文件超过 4 GB 需要 `co64`，脚本会直接报错。只支持可变大小的 `stsz`（sample_size = 0）。**输入必须是干净文件**：`stsz` 样本数等于 `stts` 计时样本数；对已经打过补丁的文件再跑会再次追加空壳、再插一条空 edit，样本表和时长都会坏。空壳数默认按 `文件大小 / 6400` 推算（唯一的 58.3 MB 样本为 9112），但移植引擎里是固定 9112，站点对其他文件大小用哪个规则尚未验证；需要时用第三个参数显式指定。
 - **v0.4**：只保留第一条视频轨、第一条音频轨和克隆轨，其余 `trak` 会被丢弃；只处理 32 位 `stco`；没有音频轨时只保留视频轨、不追加尾巴。它生成的音频 `stsd` 是固定模板，ffmpeg 解码该轨时会报声道布局不支持，但容器结构本身与站点输出一致。预处理需要本机有 `ffmpeg`（或 `--ffmpeg PATH`），否则需要 `--no-preprocess` 并自行保证 48 kHz AAC。站点的检查只看编码类型和采样率、不看声道数和 AAC profile，所以单声道或 HE-AAC 源仍可能通过检查，却与模板声明的双声道 AAC-LC 不一致。
 - 三个版本都不要对输出使用 `ffmpeg -c copy` 重封装，空壳样本会被物化成真实样本。
 - 这些改写都不符合严格的 MP4 规范，效果依赖平台实现，可能随时失效。
