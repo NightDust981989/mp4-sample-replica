@@ -21,7 +21,7 @@ python -I tools/probe_tables.py <file.mp4>
 
 - `parse_gear.py`：打印 `aweme_detail.video` 的分辨率、时长、默认 `play_addr`，以及 `bit_rate[]` 每一档的 `gear_name` / `quality_type` / 码率 / FPS / H.265 / 分辨率 / `data_size`。
 - `parse_meta.py`：`video.meta` 是 JSON **字符串**，这个脚本原样打印前 4000 字符，并打印 `audio` / `bit_rate_audio`。
-- `probe_tables.py`：打印顶层 box、`mvhd`、每个 `trak` 的 `tkhd`/`mdhd`/`elst`/`stts`/`stsz`/`stsc`/`stco`，以及按 `stsc` 推导的 chunk/样本映射、最大样本结束偏移、尾部样本大小。用来找 ghost samples、重复音轨、EOF 桩和样本表不一致。
+- `probe_tables.py`：打印顶层 box、`mvhd`、每个 `trak` 的 `tkhd`/`mdhd`/`elst`/`stts`/`stsz`/`stsc`/`stco`，以及按 `stsc` 推导的 chunk/样本映射、最大样本结束偏移、尾部样本大小。还会打印 `stss` 关键帧间隔（GOP）、`ctts` 偏移范围、`avcC`/`hvcC` 的 profile/level、`esds` 的 objectTypeIndication/平均码率和 ASC 十六进制（`eb8a0800` = HE-AACv2，`1210` = AAC-LC 44.1 kHz）。用来找 ghost samples、重复音轨、EOF 桩和样本表不一致，也用来核对平台转码档的编码参数。
 
 ## 输入格式
 

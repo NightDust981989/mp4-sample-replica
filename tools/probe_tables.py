@@ -47,6 +47,43 @@ def child(d, s, e, typ):
     return None
 
 
+def dsc(e, i):
+    """Read one MPEG-4 descriptor tag/length/payload offset."""
+    tag = e[i]
+    i += 1
+    ln = 0
+    for _ in range(4):
+        c = e[i]
+        i += 1
+        ln = (ln << 7) | (c & 0x7f)
+        if not c & 0x80:
+            break
+    return tag, ln, i
+
+
+def esds_info(e):
+    """Return (objectTypeIndication, avgBitrate, asc_hex) or None."""
+    try:
+        tag, ln, i = dsc(e, 4)
+        i += 2
+        fl = e[i]
+        i += 1
+        if fl & 0x80:
+            i += 2
+        if fl & 0x40:
+            i += 1 + e[i]
+        if fl & 0x20:
+            i += 2
+        tag, ln, i = dsc(e, i)
+        oti = e[i]
+        avg = u32(e, i + 9)
+        i += 13
+        tag, ln, i = dsc(e, i)
+        return oti, avg, e[i:i + ln].hex()
+    except (IndexError, AssertionError):
+        return None
+
+
 def track_info(d, a, p, b):
     info = {}
     t = child(d, p, b, b"tkhd")
@@ -124,6 +161,17 @@ def track_info(d, a, p, b):
             n = u32(d, q + 4)
             info["co64"] = True
             info["offsets"] = [u64(d, q + 8 + 8 * i) for i in range(n)]
+    st = child(d, sp, sb, b"stss")
+    if st:
+        q = st[1]
+        n = u32(d, q + 4)
+        info["stss"] = [u32(d, q + 8 + 4 * i) for i in range(n)]
+    ct = child(d, sp, sb, b"ctts")
+    if ct:
+        q = ct[1]
+        n = u32(d, q + 4)
+        vals = [struct.unpack(">i", d[q + 12 + 8 * i:q + 16 + 8 * i])[0] for i in range(n)]
+        info["ctts"] = (n, min(vals) if vals else None, max(vals) if vals else None)
     sd = child(d, sp, sb, b"stsd")
     if sd:
         q = sd[1]
@@ -131,6 +179,16 @@ def track_info(d, a, p, b):
         if info.get("handler") == "soun":
             info["channels"] = struct.unpack(">H", d[q + 32:q + 34])[0]
             info["sample_rate"] = u32(d, q + 40) >> 16
+        ent = q + 8
+        end = min(ent + u32(d, ent), sd[2])
+        inner = ent + (86 if info.get("handler") == "vide" else 36)
+        for typ, a, p, b in boxes(d, inner, end):
+            if typ == b"avcC":
+                info["avcC"] = (d[p + 1], d[p + 3])  # profile, level
+            elif typ == b"hvcC":
+                info["hvcC"] = (d[p + 1] & 0x1f, d[p + 12])  # profile_idc, level_idc
+            elif typ == b"esds":
+                info["esds"] = esds_info(d[p:b])
     return info
 
 
@@ -159,6 +217,19 @@ def report(path):
         print("  stts n", ti.get("n_stts"), "dur", ti.get("d_stts"), "entries", ti.get("stts")[:6])
         print("  stsz n", ti.get("n_stsz"), "fixed", ti.get("stsz_fixed"), "codec", ti.get("codec"),
               "ch", ti.get("channels"), "rate", ti.get("sample_rate"))
+        if ti.get("stss"):
+            ks = ti["stss"]
+            gaps = sorted(set(ks[i + 1] - ks[i] for i in range(len(ks) - 1)))
+            print("  stss n", len(ks), "first", ks[:4], "gaps", gaps[:8])
+        if ti.get("ctts"):
+            print("  ctts runs", ti["ctts"][0], "offset min/max", ti["ctts"][1], ti["ctts"][2])
+        if ti.get("avcC"):
+            print("  avcC profile/level", ti["avcC"])
+        if ti.get("hvcC"):
+            print("  hvcC profile_idc/level_idc", ti["hvcC"])
+        if ti.get("esds"):
+            oti, avg, asc = ti["esds"]
+            print("  esds oti 0x%02x avg %d asc %s" % (oti, avg, asc))
         if ti.get("offsets") and ti.get("sizes"):
             offs = ti["offsets"]
             sizes = ti["sizes"]
